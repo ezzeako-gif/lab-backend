@@ -1,229 +1,224 @@
 const express = require('express');
-const { Pool } = require('pg');
 const cors = require('cors');
+const { Pool } = require('pg');
+require('dotenv').config();
 
 const app = express();
-
-// Configuración de Middlewares
 app.use(cors());
 app.use(express.json());
 
-// Conexión a PostgreSQL usando la variable de entorno de Render
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+    connectionString: process.env.DB_URI,
+    ssl: { rejectUnauthorized: false }
 });
 
-// Inicialización de la Base de Datos (Creación de tablas relacionales)
-const inicializarBD = async () => {
-  try {
-    // 1. Tabla de Activos
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS activos (
-        id SERIAL PRIMARY KEY,
-        nombre VARCHAR(100) NOT NULL,
-        codigo VARCHAR(50) UNIQUE NOT NULL,
-        categoria VARCHAR(50) NOT NULL,
-        ubicacion VARCHAR(100) NOT NULL,
-        fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // 2. Tabla de Faltantes (Requerimientos)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS faltantes (
-        id SERIAL PRIMARY KEY,
-        elemento VARCHAR(100) NOT NULL,
-        cantidad INT NOT NULLCHECK (cantidad >= 0),
-        prioridad VARCHAR(20) NOT NULL,
-        fecha_solicitud TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // 3. Tabla de Bitácora de Auditoría de Seguridad
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS bitacora (
-        id SERIAL PRIMARY KEY,
-        accion VARCHAR(50) NOT NULL,
-        detalles TEXT NOT NULL,
-        fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    console.log('⚙️ Base de datos relacional PostgreSQL reiniciada e inicializada con éxito.');
-  } catch (err) {
-    console.error('❌ Error al inicializar las tablas en PostgreSQL:', err);
-  }
+// Inicialización de Tablas (Agregamos la tabla de dañados)
+const initDB = async () => {
+    try {
+        // Tabla de activos existentes
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS activos (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(255) NOT NULL,
+                codigo VARCHAR(100) UNIQUE NOT NULL,
+                categoria VARCHAR(100) NOT NULL,
+                ubicacion VARCHAR(255) NOT NULL
+            );
+        `);
+        // Tabla de requerimientos / faltantes
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS faltantes (
+                id SERIAL PRIMARY KEY,
+                elemento VARCHAR(255) NOT NULL,
+                cantidad INT NOT NULL,
+                prioridad VARCHAR(50) NOT NULL
+            );
+        `);
+        // Tabla de sistemas dañados (¡NUEVA!)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS danados (
+                id SERIAL PRIMARY KEY,
+                nombre VARCHAR(255) NOT NULL,
+                codigo VARCHAR(100) NOT NULL,
+                reporte VARCHAR(255) NOT NULL,
+                fecha_reporte TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        // Tabla de bitácora
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bitacora (
+                id SERIAL PRIMARY KEY,
+                accion VARCHAR(100) NOT NULL,
+                detalles TEXT NOT NULL,
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log("📌 Estructura de base de datos relacional lista y verificada.");
+    } catch (err) {
+        console.error("❌ Error al inicializar la base de datos:", err);
+    }
 };
+initDB();
 
-inicializarBD();
-
-// ==========================================
-// 🏢 MÓDULO 1: CONTROL DE ACTIVOS TI
-// ==========================================
-
-// GET: Obtener todos los activos
+// === ENDPOINTS DE ACTIVOS ===
 app.get('/api/activos', async (req, res) => {
-  try {
-    const resultado = await pool.query('SELECT * FROM activos ORDER BY id DESC');
-    res.json(resultado.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al obtener la lista de activos.' });
-  }
+    try {
+        const result = await pool.query('SELECT * FROM activos ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST: Registrar un nuevo activo físico
 app.post('/api/activos', async (req, res) => {
-  const { nombre, codigo, categoria, ubicacion } = req.body;
-  try {
-    const nuevoActivo = await pool.query(
-      'INSERT INTO activos (nombre, codigo, categoria, ubicacion) VALUES ($1, $2, $3, $4) RETURNING *',
-      [nombre, codigo, categoria, ubicacion]
-    );
-
-    // Registro automático en la Bitácora de Auditoría
-    await pool.query(
-      'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-      ['ALTA_ACTIVO', `Se ingresó el activo [${codigo}] ${nombre} en ${ubicacion} por Rosa Reyes.`]
-    );
-
-    res.status(201).json(nuevoActivo.rows[0]);
-  } catch (err) {
-    console.error(err);
-    if (err.code === '23505') {
-      res.status(400).json({ error: 'El código único del activo ya está registrado en el sistema.' });
-    } else {
-      res.status(500).json({ error: 'Error interno al registrar el activo.' });
+    const { nombre, codigo, categoria, ubicacion } = req.body;
+    try {
+        const result = await pool.query(
+            'INSERT INTO activos (nombre, codigo, categoria, ubicacion) VALUES ($1, $2, $3, $4) RETURNING *',
+            [nombre, codigo, categoria, ubicacion]
+        );
+        await pool.query(
+            'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
+            ['ALTA', `Se integró el activo ${nombre} (${codigo}) por Rosa Reyes`]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        if(err.code === '23505') return res.status(400).json({ error: "El código de activo ya existe." });
+        res.status(500).json({ error: err.message });
     }
-  }
 });
 
-// DELETE: Dar de baja un activo físico
 app.delete('/api/activos/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const buscarActivo = await pool.query('SELECT nombre, codigo FROM activos WHERE id = $1', [id]);
-    
-    if (buscarActivo.rows.length === 0) {
-      return res.status(404).json({ error: 'El activo que deseas eliminar no existe.' });
-    }
-
-    const { nombre, codigo } = buscarActivo.rows[0];
-
-    await pool.query('DELETE FROM activos WHERE id = $1', [id]);
-
-    // Registro de la eliminación en la Bitácora de Auditoría
-    await pool.query(
-      'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-      ['BAJA_ACTIVO', `Se retiró del inventario el activo [${codigo}] ${nombre} por Rosa Reyes.`]
-    );
-
-    res.json({ mensaje: 'Activo eliminado correctamente e inspección guardada.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error interno al dar de baja el activo.' });
-  }
+    const { id } = req.params;
+    try {
+        const buscando = await pool.query('SELECT * FROM activos WHERE id = $1', [id]);
+        if(buscando.rows.length === 0) return res.status(404).json({ error: "Activo no encontrado." });
+        
+        const activo = buscando.rows[0];
+        await pool.query('DELETE FROM activos WHERE id = $1', [id]);
+        await pool.query(
+            'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
+            ['BAJA', `Se retiró del inventario el activo ${activo.nombre} (${activo.codigo}) por Rosa Reyes`]
+        );
+        res.json({ mensaje: "Activo eliminado físicamente." });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// 📥 MÓDULO 2: REQUERIMIENTOS Y STOCK FALTANTE
-// ==========================================
-
-// GET: Obtener necesidades del laboratorio
+// === ENDPOINTS DE REQUERIMIENTOS (CON INTERCONEXIÓN LOGÍSTICA) ===
 app.get('/api/faltantes', async (req, res) => {
-  try {
-    const resultado = await pool.query('SELECT * FROM faltantes ORDER BY id DESC');
-    res.json(resultado.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al obtener la lista de requerimientos.' });
-  }
+    try {
+        const result = await pool.query('SELECT * FROM faltantes ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST: Registrar un elemento faltante
 app.post('/api/faltantes', async (req, res) => {
-  const { elemento, cantidad, prioridad } = req.body;
-  try {
-    const nuevoFaltante = await pool.query(
-      'INSERT INTO faltantes (elemento, cantidad, prioridad) VALUES ($1, $2, $3) RETURNING *',
-      [elemento, cantidad, prioridad]
-    );
-
-    res.status(201).json(nuevoFaltante.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error interno al registrar el requerimiento.' });
-  }
+    const { elemento, cantidad, prioridad } = req.body;
+    try {
+        const result = await pool.query(
+            'INSERT INTO faltantes (elemento, cantidad, prioridad) VALUES ($1, $2, $3) RETURNING *',
+            [elemento, cantidad, prioridad]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT: Llenar o restar stock de un elemento faltante (¡Cierra ciclo y elimina si llega a 0!)
+// Surtir stock -> ¡Modificado para añadir automáticamente a activos!
 app.put('/api/faltantes/:id', async (req, res) => {
-  const { id } = req.params;
-  const { cantidadAsurtir } = req.body;
+    const { id } = req.params;
+    const { cantidadAsurtir } = req.body;
 
-  if (!cantidadAsurtir || cantidadAsurtir <= 0) {
-    return res.status(400).json({ error: 'La cantidad a surtir debe ser mayor a cero.' });
-  }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN'); // Iniciamos una transacción atómica
 
-  try {
-    const buscarFaltante = await pool.query('SELECT elemento, cantidad FROM faltantes WHERE id = $1', [id]);
-    
-    if (buscarFaltante.rows.length === 0) {
-      return res.status(404).json({ error: 'El requerimiento solicitado no existe.' });
+        const buscando = await client.query('SELECT * FROM faltantes WHERE id = $1', [id]);
+        if (buscando.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: "Requerimiento no encontrado." });
+        }
+
+        const fila = buscando.rows[0];
+        if (cantidadAsurtir > fila.cantidad) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: "La cantidad ingresada supera la demanda requerida." });
+        }
+
+        const nuevaCantidad = fila.cantidad - cantidadAsurtir;
+        let mensajeAdicional = "";
+
+        // 1. Actualizar o eliminar de la lista de faltantes
+        if (nuevaCantidad === 0) {
+            await client.query('DELETE FROM faltantes WHERE id = $1', [id]);
+            mensajeAdicional = " El requerimiento fue completado y cerrado.";
+        } else {
+            await client.query('UPDATE faltantes SET cantidad = $1 WHERE id = $2', [nuevaCantidad, id]);
+            mensajeAdicional = ` Quedan ${nuevaCantidad} unidades pendientes de recibir.`;
+        }
+
+        // 2. LOGÍSTICA AUTOMÁTICA: Insertar las unidades surtidas como activos listos en el módulo principal
+        for (let i = 0; i < cantidadAsurtir; i++) {
+            // Generamos un código único secuencial o aleatorio basado en el ID para evitar choques de llave primaria
+            const codigoAutomatico = `SRT-${id}-${Math.floor(1000 + Math.random() * 9000)}`;
+            await client.query(
+                'INSERT INTO activos (nombre, codigo, categoria, ubicacion) VALUES ($1, $2, $3, $4)',
+                [fila.elemento, codigoAutomatico, 'Estaciones de Trabajo', 'Almacén Central / Recién Surtido']
+            );
+        }
+
+        // 3. Registrar en la bitácora
+        await client.query(
+            'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
+            ['SURTIDO', `Se ingresaron ${cantidadAsurtir} unidades de "${fila.elemento}" al inventario de Activos Físicos por Rosa Reyes.`]
+        );
+
+        await client.query('COMMIT'); // Guardamos todos los cambios de forma segura
+        res.json({ mensaje: `Insumo procesado con éxito.${mensajeAdicional} Las unidades se migraron al Módulo de Activos.` });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
     }
-
-    const { elemento, cantidad: cantidadActual } = buscarFaltante.rows[0];
-    const nuevaCantidad = cantidadActual - cantidadAsurtir;
-
-    if (nuevaCantidad <= 0) {
-      // Si se surtió todo el material necesario, se elimina de la lista
-      await pool.query('DELETE FROM faltantes WHERE id = $1', [id]);
-      
-      await pool.query(
-        'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-        ['STOCK_COMPLETO', `Se completó al 100% el stock faltante de ${elemento} por Rosa Reyes.`]
-      );
-
-      return res.json({ mensaje: `¡Stock de ${elemento} completado! Se ha removido de la lista.` });
-    } 
-    
-    // Si quedan unidades pendientes, se actualiza la cantidad restante
-    const actualizarQuery = 'UPDATE faltantes SET cantidad = $1 WHERE id = $2 RETURNING *';
-    const resultadoActualizado = await pool.query(actualizarQuery, [nuevaCantidad, id]);
-
-    await pool.query(
-      'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-      ['ABONO_STOCK', `Se surtieron ${cantidadAsurtir} unidades de ${elemento}. Restan por conseguir: ${nuevaCantidad} por Rosa Reyes.`]
-    );
-
-    res.json({ mensaje: 'Stock restado correctamente.', faltante: resultadoActualizado.rows[0] });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error interno al actualizar el stock faltante.' });
-  }
 });
 
-// ==========================================
-// 🛡️ MÓDULO 3: BITÁCORA DE SEGURIDAD Y AUDITORÍA
-// ==========================================
+// === ENDPOINTS DE SISTEMAS DAÑADOS (¡NUEVOS!) ===
+app.get('/api/danados', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM danados ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
-// GET: Obtener registros de auditoría
+app.post('/api/danados', async (req, res) => {
+    const { nombre, codigo, reporte } = req.body;
+    try {
+        const result = await pool.query(
+            'INSERT INTO danados (nombre, codigo, reporte) VALUES ($1, $2, $3) RETURNING *',
+            [nombre, codigo, reporte]
+        );
+        await pool.query(
+            'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
+            ['FALLA', `Mantenimiento: Reportado equipo dañado: ${nombre} (${codigo}). Detalle: ${reporte}`]
+        );
+        res.json(result.rows[0]);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/danados/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM danados WHERE id = $1', [id]);
+        res.json({ mensaje: "Reporte de falla archivado." });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// === ENDPOINT DE BITÁCORA ===
 app.get('/api/bitacora', async (req, res) => {
-  try {
-    const resultado = await pool.query('SELECT * FROM bitacora ORDER BY id DESC LIMIT 30');
-    res.json(resultado.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al consultar la bitácora de auditoría.' });
-  }
+    try {
+        const result = await pool.query('SELECT * FROM bitacora ORDER BY id DESC LIMIT 40');
+        res.json(result.rows);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Puerto dinámico para producción (Render usa el 10000 por defecto si no hay PORT declarado)
-const PUERTO = process.env.PORT || 10000;
-app.listen(PUERTO, () => {
-  console.log(`🚀 Servidor de Trazabilidad corriendo de forma segura en el puerto ${PUERTO}`);
-});
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Servidor de Trazabilidad corriendo en el puerto ${PORT}`));
