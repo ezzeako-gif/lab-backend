@@ -7,15 +7,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Forzamos el uso de la URI remota configurada en Render
 const pool = new Pool({
     connectionString: process.env.DB_URI,
     ssl: { rejectUnauthorized: false }
 });
 
-// Inicialización de Tablas (Agregamos la tabla de dañados)
+// Inicialización automática de Tablas relacionales
 const initDB = async () => {
     try {
-        // Tabla de activos existentes
         await pool.query(`
             CREATE TABLE IF NOT EXISTS activos (
                 id SERIAL PRIMARY KEY,
@@ -25,7 +25,6 @@ const initDB = async () => {
                 ubicacion VARCHAR(255) NOT NULL
             );
         `);
-        // Tabla de requerimientos / faltantes
         await pool.query(`
             CREATE TABLE IF NOT EXISTS faltantes (
                 id SERIAL PRIMARY KEY,
@@ -34,7 +33,6 @@ const initDB = async () => {
                 prioridad VARCHAR(50) NOT NULL
             );
         `);
-        // Tabla de sistemas dañados (¡NUEVA!)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS danados (
                 id SERIAL PRIMARY KEY,
@@ -44,7 +42,6 @@ const initDB = async () => {
                 fecha_reporte TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        // Tabla de bitácora
         await pool.query(`
             CREATE TABLE IF NOT EXISTS bitacora (
                 id SERIAL PRIMARY KEY,
@@ -53,9 +50,9 @@ const initDB = async () => {
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        console.log("📌 Estructura de base de datos relacional lista y verificada.");
+        console.log("📌 Estructura de base de datos relacional verificada con éxito en la nube.");
     } catch (err) {
-        console.error("❌ Error al inicializar la base de datos:", err);
+        console.error("❌ Error grave al inicializar la base de datos:", err);
     }
 };
 initDB();
@@ -102,7 +99,7 @@ app.delete('/api/activos/:id', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// === ENDPOINTS DE REQUERIMIENTOS (CON INTERCONEXIÓN LOGÍSTICA) ===
+// === ENDPOINTS DE REQUERIMIENTOS ===
 app.get('/api/faltantes', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM faltantes ORDER BY id DESC');
@@ -121,67 +118,45 @@ app.post('/api/faltantes', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Surtir stock -> ¡Modificado para añadir automáticamente a activos!
 app.put('/api/faltantes/:id', async (req, res) => {
     const { id } = req.params;
     const { cantidadAsurtir } = req.body;
-
     const client = await pool.connect();
     try {
-        await client.query('BEGIN'); // Iniciamos una transacción atómica
-
+        await client.query('BEGIN');
         const buscando = await client.query('SELECT * FROM faltantes WHERE id = $1', [id]);
         if (buscando.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: "Requerimiento no encontrado." });
         }
-
         const fila = buscando.rows[0];
         if (cantidadAsurtir > fila.cantidad) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: "La cantidad ingresada supera la demanda requerida." });
+            return res.status(400).json({ error: "La cantidad supera la demanda." });
         }
-
         const nuevaCantidad = fila.cantidad - cantidadAsurtir;
-        let mensajeAdicional = "";
-
-        // 1. Actualizar o eliminar de la lista de faltantes
         if (nuevaCantidad === 0) {
             await client.query('DELETE FROM faltantes WHERE id = $1', [id]);
-            mensajeAdicional = " El requerimiento fue completado y cerrado.";
         } else {
             await client.query('UPDATE faltantes SET cantidad = $1 WHERE id = $2', [nuevaCantidad, id]);
-            mensajeAdicional = ` Quedan ${nuevaCantidad} unidades pendientes de recibir.`;
         }
-
-        // 2. LOGÍSTICA AUTOMÁTICA: Insertar las unidades surtidas como activos listos en el módulo principal
         for (let i = 0; i < cantidadAsurtir; i++) {
-            // Generamos un código único secuencial o aleatorio basado en el ID para evitar choques de llave primaria
-            const codigoAutomatico = `SRT-${id}-${Math.floor(1000 + Math.random() * 9000)}`;
+            const codigoAuto = `SRT-${id}-${Math.floor(1000 + Math.random() * 9000)}`;
             await client.query(
                 'INSERT INTO activos (nombre, codigo, categoria, ubicacion) VALUES ($1, $2, $3, $4)',
-                [fila.elemento, codigoAutomatico, 'Estaciones de Trabajo', 'Almacén Central / Recién Surtido']
+                [fila.elemento, codigoAuto, 'Estaciones de Trabajo', 'Almacén Central / Recién Surtido']
             );
         }
-
-        // 3. Registrar en la bitácora
-        await client.query(
-            'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-            ['SURTIDO', `Se ingresaron ${cantidadAsurtir} unidades de "${fila.elemento}" al inventario de Activos Físicos por Rosa Reyes.`]
-        );
-
-        await client.query('COMMIT'); // Guardamos todos los cambios de forma segura
-        res.json({ mensaje: `Insumo procesado con éxito.${mensajeAdicional} Las unidades se migraron al Módulo de Activos.` });
-
+        await client.query('INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)', ['SURTIDO', `Se ingresaron ${cantidadAsurtir} unidades de "${fila.elemento}" al inventario.`]);
+        await client.query('COMMIT');
+        res.json({ mensaje: "Surtido procesado." });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: err.message });
-    } finally {
-        client.release();
-    }
+    } finally { client.release(); }
 });
 
-// === ENDPOINTS DE SISTEMAS DAÑADOS (¡NUEVOS!) ===
+// === ENDPOINTS DE DAÑADOS ===
 app.get('/api/danados', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM danados ORDER BY id DESC');
@@ -192,14 +167,8 @@ app.get('/api/danados', async (req, res) => {
 app.post('/api/danados', async (req, res) => {
     const { nombre, codigo, reporte } = req.body;
     try {
-        const result = await pool.query(
-            'INSERT INTO danados (nombre, codigo, reporte) VALUES ($1, $2, $3) RETURNING *',
-            [nombre, codigo, reporte]
-        );
-        await pool.query(
-            'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-            ['FALLA', `Mantenimiento: Reportado equipo dañado: ${nombre} (${codigo}). Detalle: ${reporte}`]
-        );
+        const result = await pool.query('INSERT INTO danados (nombre, codigo, reporte) VALUES ($1, $2, $3) RETURNING *', [nombre, codigo, reporte]);
+        await pool.query('INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)', ['FALLA', `Reportado equipo dañado: ${nombre} (${codigo}).`]);
         res.json(result.rows[0]);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -208,11 +177,10 @@ app.delete('/api/danados/:id', async (req, res) => {
     const { id } = req.params;
     try {
         await pool.query('DELETE FROM danados WHERE id = $1', [id]);
-        res.json({ mensaje: "Reporte de falla archivado." });
+        res.json({ mensaje: "Reporte archivado." });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// === ENDPOINT DE BITÁCORA ===
 app.get('/api/bitacora', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM bitacora ORDER BY id DESC LIMIT 40');
@@ -220,5 +188,6 @@ app.get('/api/bitacora', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Servidor de Trazabilidad corriendo en el puerto ${PORT}`));
+// CRUCIAL: Dejar que Render asigne dinámicamente el puerto
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Servidor enlazado correctamente al puerto ${PORT}`));
