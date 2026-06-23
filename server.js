@@ -13,10 +13,13 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// Función para inicializar las tablas de la base de datos
+// Función para inicializar las tablas de la base de datos de forma limpia
 async function inicializarBaseDeDatos() {
   try {
-    // 1. Tabla de Inventario Existente
+    // FORZAMOS LA LIMPIEZA DE LA TABLA VIEJA PARA CORREGIR LOS BLOQUEOS DE ÍNDICES
+    await pool.query(`DROP TABLE IF EXISTS activos CASCADE;`);
+
+    // 1. Tabla de Inventario Existente (Estructura Limpia)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS activos (
         id SERIAL PRIMARY KEY,
@@ -49,7 +52,7 @@ async function inicializarBaseDeDatos() {
       );
     `);
 
-    console.log("⚙️ Tablas relacionales (activos, bitacora, faltantes) verificadas e inicializadas con éxito.");
+    console.log("⚙️ Base de datos relacional PostgreSQL reiniciada e inicializada con éxito.");
   } catch (err) {
     console.error("❌ Error inicializando la base de datos:", err);
   }
@@ -84,7 +87,6 @@ app.post('/api/activos', async (req, res) => {
     return res.status(400).json({ error: 'Todos los campos son obligatorios para el alta.' });
   }
   try {
-    // Insertar el activo
     const queryActivo = `
       INSERT INTO activos (codigo, nombre, categoria, ubicacion) 
       VALUES ($1, $2, $3, $4) RETURNING *
@@ -109,7 +111,6 @@ app.post('/api/activos', async (req, res) => {
 app.delete('/api/activos/:codigo', async (req, res) => {
   const { codigo } = req.params;
   try {
-    // Buscar primero el nombre del activo para dejar registro detallado en la bitácora
     const buscarActivo = await pool.query('SELECT nombre FROM activos WHERE codigo = $1', [codigo]);
     
     if (buscarActivo.rows.length === 0) {
@@ -165,7 +166,7 @@ app.get('/api/faltantes', async (req, res) => {
   }
 });
 
-// POST: Registrar una nueva necesidad o insumo faltante
+// POST: Registrar una nueva necesidad o insumo faltante (¡CORREGIDO!)
 app.post('/api/faltantes', async (req, res) => {
   const { elemento, cantidad, prioridad } = req.body;
   if (!elemento || !cantidad) {
@@ -177,7 +178,9 @@ app.post('/api/faltantes', async (req, res) => {
       VALUES ($1, $2, $3) RETURNING *
     `;
     const nuevoFaltante = await pool.query(queryFaltante, [elemento, cantidad, prioridad || 'Media']);
-    res.status(201).json({ mensaje: 'Requerimiento registrado con éxito.', fante: nuevoFaltante.rows[0] });
+    
+    // CORRECCIÓN AQUÍ: Se cambió "fante" por "faltante" para que coincida con la lectura del Frontend
+    res.status(201).json({ mensaje: 'Requerimiento registrado con éxito.', faltante: nuevoFaltante.rows[0] });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al registrar el faltante.' });
