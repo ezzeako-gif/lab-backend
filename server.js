@@ -7,13 +7,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Forzamos el uso de la URI remota configurada en Render
+// Conexión estricta a PostgreSQL en la nube usando variables de entorno
 const pool = new Pool({
     connectionString: process.env.DB_URI,
     ssl: { rejectUnauthorized: false }
 });
 
-// Inicialización automática de Tablas relacionales
+// Inicialización automática de la estructura de datos relacional
 const initDB = async () => {
     try {
         await pool.query(`
@@ -50,12 +50,25 @@ const initDB = async () => {
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        console.log("📌 Estructura de base de datos relacional verificada con éxito en la nube.");
+        console.log("📌 Estructura relacional de la base de datos verificada correctamente en la nube.");
     } catch (err) {
-        console.error("❌ Error grave al inicializar la base de datos:", err);
+        console.error("❌ Error al inicializar la base de datos:", err);
     }
 };
 initDB();
+
+// === MÓDULO DE AUTENTICACIÓN (LOGIN MULTIUSUARIO) ===
+app.post('/api/login', (req, res) => {
+    const { usuario, contrasena } = req.body;
+
+    if (usuario === 'admin' && contrasena === 'admin123') {
+        res.json({ token: "TOKEN_SEGURIDAD_ADMIN_ROSA", rol: "admin" });
+    } else if (usuario === 'user' && contrasena === 'user123') {
+        res.json({ token: "TOKEN_SEGURIDAD_USER_ROSA", rol: "user" });
+    } else {
+        res.status(401).json({ error: "Credenciales incorrectas. Verifica tu usuario o contraseña." });
+    }
+});
 
 // === ENDPOINTS DE ACTIVOS ===
 app.get('/api/activos', async (req, res) => {
@@ -74,11 +87,11 @@ app.post('/api/activos', async (req, res) => {
         );
         await pool.query(
             'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-            ['ALTA', `Se integró el activo ${nombre} (${codigo}) por Rosa Reyes`]
+            ['ALTA', `Se integró el activo ${nombre} (${codigo}) por la administración.`]
         );
         res.json(result.rows[0]);
     } catch (err) {
-        if(err.code === '23505') return res.status(400).json({ error: "El código de activo ya existe." });
+        if(err.code === '23505') return res.status(400).json({ error: "El código de activo ya existe en la red." });
         res.status(500).json({ error: err.message });
     }
 });
@@ -93,9 +106,9 @@ app.delete('/api/activos/:id', async (req, res) => {
         await pool.query('DELETE FROM activos WHERE id = $1', [id]);
         await pool.query(
             'INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)',
-            ['BAJA', `Se retiró del inventario el activo ${activo.nombre} (${activo.codigo}) por Rosa Reyes`]
+            ['BAJA', `Se retiró permanentemente el activo ${activo.nombre} (${activo.codigo}).`]
         );
-        res.json({ mensaje: "Activo eliminado físicamente." });
+        res.json({ mensaje: "Activo eliminado físicamente de los servidores." });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -132,7 +145,7 @@ app.put('/api/faltantes/:id', async (req, res) => {
         const fila = buscando.rows[0];
         if (cantidadAsurtir > fila.cantidad) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: "La cantidad supera la demanda." });
+            return res.status(400).json({ error: "La cantidad supera la demanda solicitada." });
         }
         const nuevaCantidad = fila.cantidad - cantidadAsurtir;
         if (nuevaCantidad === 0) {
@@ -147,9 +160,9 @@ app.put('/api/faltantes/:id', async (req, res) => {
                 [fila.elemento, codigoAuto, 'Estaciones de Trabajo', 'Almacén Central / Recién Surtido']
             );
         }
-        await client.query('INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)', ['SURTIDO', `Se ingresaron ${cantidadAsurtir} unidades de "${fila.elemento}" al inventario.`]);
+        await client.query('INSERT INTO bitacora (accion, detalles) VALUES ($1, $2)', ['SURTIDO', `Se ingresaron ${cantidadAsurtir} unidades de "${fila.elemento}" mediante el panel.`]);
         await client.query('COMMIT');
-        res.json({ mensaje: "Surtido procesado." });
+        res.json({ mensaje: "Surtido procesado exitosamente." });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: err.message });
@@ -181,6 +194,7 @@ app.delete('/api/danados/:id', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// === ENDPOINT DE BITÁCORA ===
 app.get('/api/bitacora', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM bitacora ORDER BY id DESC LIMIT 40');
@@ -188,6 +202,6 @@ app.get('/api/bitacora', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// CRUCIAL: Dejar que Render asigne dinámicamente el puerto
+// Enlace dinámico al puerto asignado por Render
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Servidor enlazado correctamente al puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor corriendo sin caídas en el puerto ${PORT}`));
